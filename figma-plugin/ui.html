@@ -1,0 +1,66 @@
+<div style="font-family: Inter, sans-serif; padding: 12px; font-size: 12px;">
+  <h3 style="margin: 0 0 8px;">Baisoln Figma Gateway</h3>
+  <label>Gateway WS URL</label>
+  <input id="url" style="width:100%" value="wss://mcp.baisoln.com/figma/ws" />
+  <label>Tenant ID</label>
+  <input id="tenant" style="width:100%" placeholder="your-tenant-id" />
+  <label>Channel key</label>
+  <input id="key" type="password" style="width:100%" placeholder="from fg_register_tenant" />
+  <button id="connect" style="margin-top:8px;width:100%">Connect</button>
+  <div id="status" style="margin-top:8px;color:#888">Disconnected</div>
+</div>
+<script>
+  let ws = null;
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (t, ok) => {
+    $("status").textContent = t;
+    $("status").style.color = ok ? "#0a0" : "#c00";
+  };
+
+  // Restore saved settings from plugin storage (via main thread)
+  parent.postMessage({ pluginMessage: { type: "load-settings" } }, "*");
+
+  $("connect").onclick = () => {
+    if (ws) { ws.close(); ws = null; }
+    const url = $("url").value.trim();
+    const tenant = $("tenant").value.trim();
+    const key = $("key").value.trim();
+    parent.postMessage({ pluginMessage: { type: "save-settings",
+      settings: { url, tenant } } }, "*");
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "join", tenant_id: tenant, channel_key: key }));
+    };
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "joined") { setStatus("Connected as " + msg.tenant_id, true); return; }
+      if (msg.type === "pong") return;
+      if (msg.id && msg.command) {
+        // Forward command to the plugin main thread for Plugin API execution
+        parent.postMessage({ pluginMessage: { type: "command", msg } }, "*");
+      }
+    };
+    ws.onclose = (ev) => setStatus("Disconnected (" + ev.code + ")", false);
+    ws.onerror = () => setStatus("Connection error", false);
+  };
+
+  // Results coming back from the main thread -> relay to gateway
+  window.onmessage = (ev) => {
+    const m = ev.data.pluginMessage;
+    if (!m) return;
+    if (m.type === "result" && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(m.payload));
+    }
+    if (m.type === "settings" && m.settings) {
+      if (m.settings.url) $("url").value = m.settings.url;
+      if (m.settings.tenant) $("tenant").value = m.settings.tenant;
+    }
+  };
+
+  // Keepalive
+  setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "ping" }));
+    }
+  }, 30000);
+</script>
